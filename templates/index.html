@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>报价单转合同系统</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <div class="container">
+    <header class="page-header">
+      <h1>报价单转合同系统</h1>
+      <p class="subtitle">上传报价单与合同模板，自动生成填写好的合同文件</p>
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form class="upload-form" action="{{ url_for('process') }}" method="post"
+          enctype="multipart/form-data">
+
+      <div class="form-group">
+        <label for="quotation">
+          <span class="label-text">① 报价单文件</span>
+          <span class="label-hint">（.docx 格式）</span>
+        </label>
+        <div class="drop-area" id="drop-quotation">
+          <input type="file" id="quotation" name="quotation"
+                 accept=".docx" required />
+          <span class="drop-label" id="lbl-quotation">
+            拖拽文件到此处，或 <u>点击选择</u>
+          </span>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="template">
+          <span class="label-text">② 合同模板文件</span>
+          <span class="label-hint">（.docx 格式）</span>
+        </label>
+        <div class="drop-area" id="drop-template">
+          <input type="file" id="template" name="template"
+                 accept=".docx" required />
+          <span class="drop-label" id="lbl-template">
+            拖拽文件到此处，或 <u>点击选择</u>
+          </span>
+        </div>
+      </div>
+
+      <button type="submit" class="btn-primary" id="btn-submit">
+        ⚙ 生成合同
+      </button>
+    </form>
+
+    <section class="card instructions">
+      <h2>使用说明</h2>
+      <ol>
+        <li>
+          <strong>准备报价单</strong>（.docx）：文件中应包含
+          <code>字段名：字段值</code> 格式的内容，例如：
+          <code>客户名称：某某公司</code>。
+        </li>
+        <li>
+          <strong>准备合同模板</strong>（.docx）：在需要填入数据的位置插入
+          <code>{{ '{{字段名}}' }}</code> 占位符，例如：<code>{{ '{{客户名称}}' }}</code>。
+        </li>
+        <li>分别上传两个文件后，点击 <strong>"生成合同"</strong> 按钮。</li>
+        <li>系统自动提取报价单数据，填充到合同模板中，并提供下载。</li>
+      </ol>
+
+      <div class="field-examples">
+        <h3>常用字段示例</h3>
+        <div class="example-grid">
+          <div>
+            <p><strong>报价单中的写法</strong></p>
+            <p><code>报价编号：QT-2024-001</code></p>
+            <p><code>客户名称：某某有限公司</code></p>
+            <p><code>项目名称：办公设备采购</code></p>
+            <p><code>合计金额：46,000 元</code></p>
+          </div>
+          <div>
+            <p><strong>合同模板中的占位符</strong></p>
+            <p><code>{{ '{{报价编号}}' }}</code></p>
+            <p><code>{{ '{{客户名称}}' }}</code></p>
+            <p><code>{{ '{{项目名称}}' }}</code></p>
+            <p><code>{{ '{{合计金额}}' }}</code></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>合同生成完成 – 报价单转合同系统</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <div class="container">
+    <header class="page-header">
+      <h1>合同生成完成</h1>
+    </header>
+
+    <div class="card success-box">
+      <div class="success-icon">✓</div>
+      <p class="success-msg">合同文件已生成，点击下方按钮下载：</p>
+      <a class="btn-download"
+         href="{{ url_for('download', filename=filename) }}">
+        ⬇ 下载合同文件
+      </a>
+      <p class="file-name-hint">文件名：{{ filename }}</p>
+    </div>
+
+    {% if data %}
+    <div class="card extracted-data">
+      <h2>已提取的字段数据</h2>
+      <table>
+        <thead>
+          <tr><th>字段名</th><th>值</th></tr>
+        </thead>
+        <tbody>
+          {% for key, value in data.items() %}
+          <tr>
+            <td>{{ key }}</td>
+            <td>{{ value }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card extracted-data">
+      <p class="no-data">未从报价单中提取到任何字段数据。请确认文件格式。</p>
+    </div>
+    {% endif %}
+
+    <div class="actions">
+      <a class="btn-secondary" href="{{ url_for('index') }}">← 返回首页</a>
+    </div>
+  </div>
+</body>
+</html>
