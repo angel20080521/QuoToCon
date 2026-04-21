@@ -24,7 +24,6 @@ from flask import (
     url_for,
     flash,
 )
-from werkzeug.utils import secure_filename
 
 from utils.docx_processor import (
     extract_data_from_quotation,
@@ -150,16 +149,23 @@ def process():
 
 @app.route('/download/<path:filename>')
 def download(filename: str):
-    # Guard against path-traversal attacks
-    safe = secure_filename(filename)
-    if safe != filename:
+    # Guard against path-traversal attacks by verifying the resolved path
+    # stays within the output folder.  Using realpath handles both ".." tricks
+    # and symbolic links, and also supports Unicode filenames.
+    output_folder = os.path.realpath(app.config['OUTPUT_FOLDER'])
+    output_path = os.path.realpath(os.path.join(output_folder, filename))
+
+    if not output_path.startswith(output_folder + os.sep):
         return '无效的文件名', 400
 
-    output_path = os.path.join(app.config['OUTPUT_FOLDER'], safe)
     if not os.path.isfile(output_path):
         return '文件不存在或已过期，请重新生成。', 404
 
-    return send_file(output_path, as_attachment=True, download_name=safe)
+    return send_file(
+        output_path,
+        as_attachment=True,
+        download_name=os.path.basename(output_path),
+    )
 
 
 # ---------------------------------------------------------------------------
