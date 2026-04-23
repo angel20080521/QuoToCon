@@ -19,6 +19,7 @@ import os
 from datetime import datetime
 
 from docx import Document
+import openpyxl
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,69 @@ def extract_data_from_quotation(docx_path: str) -> dict:
             # Store raw table data under a private key for future use
             data[f'_table_{table_idx}_headers'] = rows[0]
             data[f'_table_{table_idx}_rows'] = rows[1:]
+
+    return data
+
+
+def extract_data_from_quotation_xlsx(xlsx_path: str) -> dict:
+    """Return a dict of field→value pairs extracted from *xlsx_path*.
+
+    The quotation is expected to be a two-column table with full-width field
+    names.  Extraction strategy (applied to every worksheet):
+
+    1. Rows with two or more cells where the **first** cell is non-empty are
+       treated as key-value pairs: the first cell is the key (trailing full-width
+       colons and spaces are stripped), the second cell is the value.  Empty
+       cells beyond the second column are ignored.
+    2. Rows where only a single cell is non-empty and its text matches the
+       full-width ``key：value`` pattern are also extracted.
+    3. Rows with three or more non-empty cells (i.e. genuine multi-column data
+       rows) are stored under the private keys ``_sheet_N_table_headers`` /
+       ``_sheet_N_table_rows`` for future use.
+
+    When the same key appears in multiple sheets, the first occurrence wins
+    (``setdefault`` semantics).
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    data: dict = {}
+
+    for sheet_idx, sheet in enumerate(wb.worksheets):
+        table_rows: list = []
+
+        for row in sheet.iter_rows(values_only=True):
+            # Stringify and strip every cell, preserving positional order
+            str_cells = [str(c).strip() if c is not None else '' for c in row]
+
+            if not any(str_cells):
+                continue
+
+            first = str_cells[0] if str_cells else ''
+            second = str_cells[1] if len(str_cells) > 1 else ''
+            non_empty = [c for c in str_cells if c]
+
+            if first:
+                if second or len(str_cells) > 1:
+                    # First cell is key; second cell is value (may be empty string)
+                    key = first.rstrip('： ').strip()
+                    value = second
+                    if key and len(non_empty) <= 2:
+                        # Normal key-value row
+                        data.setdefault(key, value)
+                    elif key and len(non_empty) > 2:
+                        # Multiple non-empty cells → table row
+                        table_rows.append(non_empty)
+                else:
+                    # Only one cell in the row; check for full-width "key：value"
+                    match = re.match(r'^([^：\n]{1,40})：\s*(.+)$', first)
+                    if match:
+                        key = match.group(1).strip()
+                        value = match.group(2).strip()
+                        if key:
+                            data.setdefault(key, value)
+
+        if table_rows:
+            data[f'_sheet_{sheet_idx}_table_headers'] = table_rows[0]
+            data[f'_sheet_{sheet_idx}_table_rows'] = table_rows[1:]
 
     return data
 

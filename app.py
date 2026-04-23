@@ -26,7 +26,7 @@ from flask import (
 )
 
 from utils.docx_processor import (
-    extract_data_from_quotation,
+    extract_data_from_quotation_xlsx,
     fill_template,
     generate_output_filename,
 )
@@ -57,7 +57,8 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32 MB
 
-ALLOWED_EXTENSIONS = {'docx'}
+QUOTATION_EXTENSIONS = {'xlsx'}
+TEMPLATE_EXTENSIONS = {'docx'}
 
 # Ensure runtime dirs exist on startup
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -68,10 +69,17 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _allowed(filename: str) -> bool:
+def _allowed_quotation(filename: str) -> bool:
     return (
         '.' in filename
-        and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+        and filename.rsplit('.', 1)[1].lower() in QUOTATION_EXTENSIONS
+    )
+
+
+def _allowed_template(filename: str) -> bool:
+    return (
+        '.' in filename
+        and filename.rsplit('.', 1)[1].lower() in TEMPLATE_EXTENSIONS
     )
 
 
@@ -99,24 +107,24 @@ def process():
         return redirect(url_for('index'))
 
     # --- validate types ---
-    if not _allowed(quotation_file.filename):
-        flash('报价单文件必须是 .docx 格式。', 'error')
+    if not _allowed_quotation(quotation_file.filename):
+        flash('报价单文件必须是 .xlsx 格式。', 'error')
         return redirect(url_for('index'))
 
-    if not _allowed(template_file.filename):
+    if not _allowed_template(template_file.filename):
         flash('合同模板文件必须是 .docx 格式。', 'error')
         return redirect(url_for('index'))
 
     # --- save with collision-safe names ---
     session_id = uuid.uuid4().hex
-    quotation_path = os.path.join(UPLOAD_FOLDER, f'{session_id}_quotation.docx')
+    quotation_path = os.path.join(UPLOAD_FOLDER, f'{session_id}_quotation.xlsx')
     template_path = os.path.join(UPLOAD_FOLDER, f'{session_id}_template.docx')
 
     quotation_file.save(quotation_path)
     template_file.save(template_path)
 
     try:
-        data = extract_data_from_quotation(quotation_path)
+        data = extract_data_from_quotation_xlsx(quotation_path)
         logger.info('Extracted %d field(s) from quotation.', len(data))
 
         output_filename = generate_output_filename(data)

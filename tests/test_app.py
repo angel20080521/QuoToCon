@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import openpyxl
 from docx import Document
 import app as flask_app
 
@@ -27,6 +28,17 @@ def client(tmp_path):
     os.makedirs(flask_app.app.config['OUTPUT_FOLDER'], exist_ok=True)
     with flask_app.app.test_client() as c:
         yield c
+
+
+def _make_xlsx_bytes(rows: list[list]) -> bytes:
+    """Return the raw bytes of a minimal .xlsx with the given rows."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def _make_docx_bytes(paragraphs: list[str]) -> bytes:
@@ -54,6 +66,10 @@ class TestIndex:
         rv = client.get('/')
         assert b'charset' in rv.data.lower()
 
+    def test_xlsx_accept_shown_for_quotation(self, client):
+        rv = client.get('/')
+        assert b'.xlsx' in rv.data
+
 
 # ---------------------------------------------------------------------------
 # POST /process
@@ -67,23 +83,35 @@ class TestProcess:
 
     def test_missing_template_redirects(self, client):
         rv = client.post('/process', data={
-            'quotation': (io.BytesIO(_make_docx_bytes(['客户名称：测试公司'])), 'q.docx'),
+            'quotation': (io.BytesIO(_make_xlsx_bytes([['客户名称：', '测试公司']])), 'q.xlsx'),
         }, content_type='multipart/form-data')
         assert rv.status_code == 302
 
-    def test_wrong_extension_redirects(self, client):
+    def test_wrong_quotation_extension_redirects(self, client):
+        """Uploading a .docx as quotation should be rejected."""
         rv = client.post('/process', data={
-            'quotation': (io.BytesIO(b'not a docx'), 'q.txt'),
+            'quotation': (io.BytesIO(_make_docx_bytes(['客户名称：测试公司'])), 'q.docx'),
             'template': (io.BytesIO(_make_docx_bytes(['{{客户名称}}'])), 't.docx'),
         }, content_type='multipart/form-data')
         assert rv.status_code == 302
 
+    def test_wrong_template_extension_redirects(self, client):
+        """Uploading a non-.docx file as template should be rejected."""
+        rv = client.post('/process', data={
+            'quotation': (io.BytesIO(_make_xlsx_bytes([['客户名称：', '测试公司']])), 'q.xlsx'),
+            'template': (io.BytesIO(b'not a docx'), 't.txt'),
+        }, content_type='multipart/form-data')
+        assert rv.status_code == 302
+
     def test_successful_process_returns_200_with_download_link(self, client):
-        quotation_bytes = _make_docx_bytes(['客户名称：某某公司', '报价编号：QT-001'])
+        quotation_bytes = _make_xlsx_bytes([
+            ['客户名称：', '某某公司'],
+            ['报价编号：', 'QT-001'],
+        ])
         template_bytes = _make_docx_bytes(['甲方：{{客户名称}}', '编号：{{报价编号}}'])
 
         rv = client.post('/process', data={
-            'quotation': (io.BytesIO(quotation_bytes), 'quotation.docx'),
+            'quotation': (io.BytesIO(quotation_bytes), 'quotation.xlsx'),
             'template': (io.BytesIO(template_bytes), 'template.docx'),
         }, content_type='multipart/form-data')
 
@@ -92,11 +120,11 @@ class TestProcess:
         assert '某某公司'.encode() in rv.data or b'QT-001' in rv.data
 
     def test_extracted_fields_shown_in_result(self, client):
-        quotation_bytes = _make_docx_bytes(['客户名称：示例客户'])
+        quotation_bytes = _make_xlsx_bytes([['客户名称：', '示例客户']])
         template_bytes = _make_docx_bytes(['合同甲方：{{客户名称}}'])
 
         rv = client.post('/process', data={
-            'quotation': (io.BytesIO(quotation_bytes), 'q.docx'),
+            'quotation': (io.BytesIO(quotation_bytes), 'q.xlsx'),
             'template': (io.BytesIO(template_bytes), 't.docx'),
         }, content_type='multipart/form-data')
 
@@ -120,7 +148,6 @@ class TestDownload:
         assert rv.status_code in (400, 404)
 
     def test_download_existing_file(self, client, tmp_path):
-        # Manually place a file in the output folder
         output_dir = flask_app.app.config['OUTPUT_FOLDER']
         fname = '合同_20240501_120000.docx'
         fpath = os.path.join(output_dir, fname)

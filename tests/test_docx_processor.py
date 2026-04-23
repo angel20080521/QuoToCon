@@ -3,18 +3,19 @@ tests/test_docx_processor.py
 Unit tests for utils/docx_processor.py
 """
 
+import io
 import os
 import sys
 import pytest
-from io import BytesIO
 from datetime import datetime
 
 # Make the project root importable regardless of where pytest is invoked from.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import openpyxl
 from docx import Document
 from utils.docx_processor import (
-    extract_data_from_quotation,
+    extract_data_from_quotation_xlsx,
     fill_template,
     generate_output_filename,
 )
@@ -24,21 +25,15 @@ from utils.docx_processor import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_quotation_docx(paragraphs: list[str], tables: list[list[list[str]]] = None) -> str:
-    """Write a temporary .docx and return its path."""
-    doc = Document()
-    for text in paragraphs:
-        doc.add_paragraph(text)
-    if tables:
-        for table_data in tables:
-            rows = len(table_data)
-            cols = max(len(r) for r in table_data)
-            tbl = doc.add_table(rows=rows, cols=cols)
-            for r_idx, row_data in enumerate(table_data):
-                for c_idx, cell_text in enumerate(row_data):
-                    tbl.rows[r_idx].cells[c_idx].text = cell_text
-    tmp = os.path.join(os.path.dirname(__file__), '_tmp_quotation.docx')
-    doc.save(tmp)
+def _make_xlsx(rows: list[list], sheet_name: str = 'Sheet1') -> str:
+    """Write a temporary .xlsx with given rows and return its path."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    for row in rows:
+        ws.append(row)
+    tmp = os.path.join(os.path.dirname(__file__), '_tmp_quotation.xlsx')
+    wb.save(tmp)
     return tmp
 
 
@@ -61,88 +56,114 @@ def _cleanup(*paths):
 
 
 # ---------------------------------------------------------------------------
-# extract_data_from_quotation
+# extract_data_from_quotation_xlsx
 # ---------------------------------------------------------------------------
 
-class TestExtractData:
+class TestExtractDataXlsx:
 
-    def test_paragraph_full_width_colon(self, tmp_path):
-        q = str(tmp_path / 'q.docx')
-        doc = Document()
-        doc.add_paragraph('客户名称：某某有限公司')
-        doc.add_paragraph('报价编号：QT-2024-001')
-        doc.save(q)
+    def test_two_column_table_fullwidth_key(self, tmp_path):
+        """Standard two-column table with full-width field names."""
+        q = str(tmp_path / 'q.xlsx')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['客户名称：', '某某有限公司'])
+        ws.append(['报价编号：', 'QT-2024-001'])
+        wb.save(q)
 
-        data = extract_data_from_quotation(q)
+        data = extract_data_from_quotation_xlsx(q)
         assert data['客户名称'] == '某某有限公司'
         assert data['报价编号'] == 'QT-2024-001'
 
-    def test_paragraph_ascii_colon(self, tmp_path):
-        q = str(tmp_path / 'q.docx')
-        doc = Document()
-        doc.add_paragraph('Project Name: Office Equipment')
-        doc.save(q)
+    def test_two_column_table_key_without_colon(self, tmp_path):
+        """Full-width field name without trailing colon."""
+        q = str(tmp_path / 'q.xlsx')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目名称', '智慧园区项目'])
+        ws.append(['签约日期', '2024-05-01'])
+        wb.save(q)
 
-        data = extract_data_from_quotation(q)
-        assert data['Project Name'] == 'Office Equipment'
+        data = extract_data_from_quotation_xlsx(q)
+        assert data['项目名称'] == '智慧园区项目'
+        assert data['签约日期'] == '2024-05-01'
 
-    def test_empty_paragraph_ignored(self, tmp_path):
-        q = str(tmp_path / 'q.docx')
-        doc = Document()
-        doc.add_paragraph('')
-        doc.add_paragraph('   ')
-        doc.add_paragraph('合计金额：10,000 元')
-        doc.save(q)
+    def test_single_cell_fullwidth_colon_pattern(self, tmp_path):
+        """Single cell with full-width 'key：value' format."""
+        q = str(tmp_path / 'q.xlsx')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['合计金额：46,000 元'])
+        wb.save(q)
 
-        data = extract_data_from_quotation(q)
-        assert '合计金额' in data
+        data = extract_data_from_quotation_xlsx(q)
+        assert data.get('合计金额') == '46,000 元'
+
+    def test_empty_rows_ignored(self, tmp_path):
+        """Completely empty rows are skipped."""
+        q = str(tmp_path / 'q.xlsx')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append([None, None])
+        ws.append(['客户名称：', '测试公司'])
+        ws.append([None])
+        wb.save(q)
+
+        data = extract_data_from_quotation_xlsx(q)
+        assert data['客户名称'] == '测试公司'
         assert len([k for k in data if not k.startswith('_')]) == 1
 
-    def test_two_column_table(self, tmp_path):
-        q = str(tmp_path / 'q.docx')
-        doc = Document()
-        tbl = doc.add_table(rows=2, cols=2)
-        tbl.rows[0].cells[0].text = '项目名称'
-        tbl.rows[0].cells[1].text = '智慧园区项目'
-        tbl.rows[1].cells[0].text = '签约日期'
-        tbl.rows[1].cells[1].text = '2024-05-01'
-        doc.save(q)
+    def test_multi_column_rows_stored_as_private(self, tmp_path):
+        """Rows with 3+ non-empty cells become private table metadata."""
+        q = str(tmp_path / 'q.xlsx')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['型号', '数量', '单价'])
+        ws.append(['TypeA', '10', '500'])
+        wb.save(q)
 
-        data = extract_data_from_quotation(q)
-        assert data.get('项目名称') == '智慧园区项目'
-        assert data.get('签约日期') == '2024-05-01'
-
-    def test_multi_column_table_stored_as_private(self, tmp_path):
-        q = str(tmp_path / 'q.docx')
-        doc = Document()
-        tbl = doc.add_table(rows=2, cols=3)
-        headers = ['型号', '数量', '单价']
-        for i, h in enumerate(headers):
-            tbl.rows[0].cells[i].text = h
-        for i, v in enumerate(['TypeA', '10', '500']):
-            tbl.rows[1].cells[i].text = v
-        doc.save(q)
-
-        data = extract_data_from_quotation(q)
+        data = extract_data_from_quotation_xlsx(q)
         private_keys = [k for k in data if k.startswith('_')]
         assert len(private_keys) > 0
 
-    def test_paragraph_does_not_overwrite_table_value(self, tmp_path):
-        """Paragraph extraction runs first; table uses setdefault, so paragraph wins."""
-        q = str(tmp_path / 'q.docx')
-        doc = Document()
-        doc.add_paragraph('客户名称：段落中的公司')
-        tbl = doc.add_table(rows=1, cols=2)
-        tbl.rows[0].cells[0].text = '客户名称'
-        tbl.rows[0].cells[1].text = '表格中的公司'
-        doc.save(q)
+    def test_first_sheet_value_wins(self, tmp_path):
+        """When the same key appears on multiple sheets, first wins."""
+        q = str(tmp_path / 'q.xlsx')
+        wb = openpyxl.Workbook()
+        ws1 = wb.active
+        ws1.title = 'Sheet1'
+        ws1.append(['客户名称：', '第一页公司'])
+        ws2 = wb.create_sheet('Sheet2')
+        ws2.append(['客户名称：', '第二页公司'])
+        wb.save(q)
 
-        data = extract_data_from_quotation(q)
-        assert data['客户名称'] == '段落中的公司'
+        data = extract_data_from_quotation_xlsx(q)
+        assert data['客户名称'] == '第一页公司'
+
+    def test_numeric_value_converted_to_string(self, tmp_path):
+        """Numeric cell values are stringified."""
+        q = str(tmp_path / 'q.xlsx')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['合计金额：', 46000])
+        wb.save(q)
+
+        data = extract_data_from_quotation_xlsx(q)
+        assert data['合计金额'] == '46000'
+
+    def test_single_cell_halfwidth_colon_not_matched(self, tmp_path):
+        """Half-width colon in a single cell is NOT extracted (full-width only)."""
+        q = str(tmp_path / 'q.xlsx')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['客户名称: 某公司'])   # half-width colon
+        wb.save(q)
+
+        data = extract_data_from_quotation_xlsx(q)
+        assert '客户名称' not in data
 
 
 # ---------------------------------------------------------------------------
-# fill_template
+# fill_template  (unchanged – kept for regression)
 # ---------------------------------------------------------------------------
 
 class TestFillTemplate:
@@ -246,19 +267,17 @@ class TestGenerateOutputFilename:
     def test_timestamp_suffix_format(self):
         data = {'报价编号': 'QT-001'}
         name = generate_output_filename(data)
-        # name is like  QT-001_20240501_153045.docx
         stem = name[:-5]  # strip .docx
         parts = stem.rsplit('_', 2)
         assert len(parts) == 3
         date_part, time_part = parts[1], parts[2]
-        datetime.strptime(date_part + time_part, '%Y%m%d%H%M%S')  # raises if invalid
+        datetime.strptime(date_part + time_part, '%Y%m%d%H%M%S')
 
     def test_name_truncated_to_50_chars(self):
         long_name = '甲' * 100
         data = {'报价编号': long_name}
         name = generate_output_filename(data)
-        stem = name[:-5]   # strip .docx
-        # stem is  <name_part>_YYYYMMDD_HHMMSS  – name_part ≤ 50 chars
+        stem = name[:-5]
         name_part = stem.rsplit('_', 2)[0]
         assert len(name_part) <= 50
 
