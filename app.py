@@ -1,7 +1,7 @@
 """
 app.py  –  QuoToCon  Flask application
 ========================================
-Converts a Word-format quotation (报价单) into a filled contract (合同)
+Converts an Excel-format quotation (报价单) into a filled contract (合同)
 using a user-supplied Word template.
 
 Routes
