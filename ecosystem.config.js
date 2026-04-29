@@ -23,7 +23,7 @@ module.exports = {
       // Adjust the path to gunicorn if you use a virtualenv in a non-standard
       // location (e.g. /home/ubuntu/QuoToCon/venv/bin/gunicorn).
       script: 'gunicorn',
-      args: '-w 2 -b 0.0.0.0:5000 --timeout 120 --access-logfile - app:app',
+      args: '-w 2 -b 0.0.0.0:5001 --timeout 120 --access-logfile - app:app',
       interpreter: 'none',
 
       // Working directory – all relative paths in app.py resolve from here
@@ -36,11 +36,11 @@ module.exports = {
 
       env: {
         FLASK_ENV: 'development',
-        PORT: '5000',
+        PORT: '5001',
       },
       env_production: {
         FLASK_ENV: 'production',
-        PORT: '5000',
+        PORT: '5001',
         // SECRET_KEY should be injected from the host environment or a .env
         // file; never hard-code it here.
       },
