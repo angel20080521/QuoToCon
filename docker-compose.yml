@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  quotacon:
+    image: quotacon:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quotacon
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+    volumes:
+      # Persist uploaded files and generated contracts outside the container
+      - quotacon_uploads:/app/uploads
+      - quotacon_outputs:/app/outputs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  quotacon_uploads:
+  quotacon_outputs:
