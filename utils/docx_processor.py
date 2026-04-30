@@ -22,6 +22,8 @@ from copy import deepcopy
 from datetime import datetime
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 import openpyxl
 
 
@@ -189,7 +191,7 @@ def _extract_product_data(data: dict, all_rows: list, header_row_idx: int,
     col_mssm = find_col('产品描述', '商品描述', '规格描述')
     col_sl = find_col('数量')
     col_dw = find_col('单位')
-    col_dj_hs = find_col('单价（含税）', '单价(含税)', '含税单价')
+    col_dj_hs = find_col('单价（含税）', '单价(含税)', '含税单价', '单价（含税 ）', '单价(含税 )')
     col_je_ws = find_col('金额(未税)', '金额（未税）', '未税金额')
     col_se = find_col('税额')
     col_je_hs = find_col('金额(含税）', '金额（含税）', '含税金额', '金额(含税)')
@@ -281,13 +283,14 @@ def _extract_product_data(data: dict, all_rows: list, header_row_idx: int,
             'rate': rate,
         }
 
-        # Categorise by product type or tax rate
-        is_service = ('服务' in spzl or '调试' in spzl or '实施' in spzl
-                      or (rate is not None and abs(rate - 0.06) < 0.001))
-        if is_service:
-            service_products.append(product)
-        else:
+        # 严格按税率分类：13% → 表格1(b1*)，6% → 表格2(b2*)
+        is_13pct = (rate is not None and abs(rate - 0.13) < 0.001)
+        is_service = (rate is not None and abs(rate - 0.06) < 0.001)
+        if is_13pct:
             hardware_products.append(product)
+        elif is_service:
+            service_products.append(product)
+        # 其他税率的商品暂不归入表格
 
     # --- Compute totals ---
     def safe_sum(rows: list, key: str) -> float:
@@ -330,13 +333,14 @@ def _extract_product_data(data: dict, all_rows: list, header_row_idx: int,
     ]:
         data.setdefault(key, val)
 
-    # First hardware product → b1* fields
+    # First hardware product → b1* fields (bh 从 1 自动编号)
     if hardware_products:
         h = hardware_products[0]
         for key, val in [
-            ('b1bh', h['bh']),
+            ('b1bh', '1'),
             ('b1spxh', h['spmc']),
             ('b1spmx', h['mssm']),
+            ('b1spms', h['mssm']),  # 商品描述
             ('b1sl', h['sl']),
             ('b1dw', h['dw']),
             ('b1dj', _format_amount_str(h['dj_hs'])),
@@ -367,10 +371,10 @@ def _extract_product_data(data: dict, all_rows: list, header_row_idx: int,
 
 def _apply_field_mappings(data: dict) -> None:
     """Apply standard field-name aliases from the quotation to contract slots."""
-    # 发票类型 (e.g. "增值税-专用发票") → fblx (option number "1" or "2")
+    # 发票类型 (e.g. "增值税-专用发票") → fblx (文字内容)
     fblx_raw = data.get('发票类型', '')
     if fblx_raw and 'fblx' not in data:
-        data['fblx'] = '2' if '专用' in fblx_raw else '1'
+        data['fblx'] = '增值税专用发票' if '专用' in fblx_raw else '普通发票'
 
     # 报价单号码 → 项目名称 (fallback when project name is absent)
     if not data.get('项目名称') and data.get('报价单号码'):
@@ -438,6 +442,71 @@ def extract_data_from_quotation(docx_path: str) -> dict:
     return data
 
 
+def _extract_billing_info(data: dict, sheet) -> None:
+    """从'开票信息'Sheet按客户名称匹配，填充账号/税务登记号/开票地址电话。"""
+    customer = data.get('客户名称', '').strip()
+    if not customer:
+        return
+    rows = list(sheet.iter_rows(values_only=True))
+    for row in rows[1:]:  # 跳过标题行
+        if not row or row[0] is None:
+            continue
+        if str(row[0]).strip() == customer:
+            if len(row) > 1 and row[1] is not None:
+                data.setdefault('客户账号', str(row[1]).strip())
+            if len(row) > 2 and row[2] is not None:
+                data.setdefault('税务登记号', str(row[2]).strip())
+            if len(row) > 3 and row[3] is not None:
+                data.setdefault('开票地址电话', str(row[3]).strip())
+            break
+
+
+def _extract_payment_info(data: dict, sheet) -> None:
+    """从'支付方式'Sheet生成付款信息文本，填充{{付款信息}}占位符。
+
+    每行格式：付款方式文本 + 支付比例 + 按比例计算的大写/小写金额。
+    """
+    total_str = data.get('合同总额小写', '0')
+    try:
+        total = float(total_str)
+    except (ValueError, TypeError):
+        total = 0.0
+
+    rows = list(sheet.iter_rows(values_only=True))
+    items: list = []
+    for row in rows[1:]:  # 跳过标题行
+        if not row or row[0] is None:
+            continue
+        method = str(row[0]).strip()
+        if not method:
+            continue
+        ratio_raw = row[1] if len(row) > 1 else None
+        ratio: float | None = None
+        if ratio_raw is not None:
+            try:
+                ratio = float(str(ratio_raw).replace('%', ''))
+                if ratio > 1:
+                    ratio /= 100
+            except (ValueError, TypeError):
+                pass
+        if ratio is not None and total > 0:
+            amount = round(total * ratio, 2)
+            cn = _amount_to_chinese(amount)
+            amt_str = _format_amount_str(amount)
+            pct_str = f'{ratio * 100:.0f}%'
+            item = (f'{method}{pct_str}，'
+                    f'人民币大写[{cn}]，小写[{amt_str}]元')
+        else:
+            item = f'{method}，人民币大写[          ]，小写[          ]元'
+        items.append(item)
+
+    if items:
+        # 合同模板已有（1）（2）条款，付款信息从（3）开始编号
+        numbered = [f'（{i + 3}）{item}' for i, item in enumerate(items)]
+        info = '\n'.join(numbered)
+        data.setdefault('付款信息', info)
+
+
 def extract_data_from_quotation_xlsx(xlsx_path: str) -> dict:
     """Return a dict of field→value pairs extracted from *xlsx_path*.
 
@@ -461,6 +530,18 @@ def extract_data_from_quotation_xlsx(xlsx_path: str) -> dict:
     data: dict = {}
 
     for sheet_idx, sheet in enumerate(wb.worksheets):
+        sheet_name = sheet.title
+
+        # 开票信息 sheet → 按客户名称查询账号/税务登记号/开票地址电话
+        if sheet_name == '开票信息':
+            _extract_billing_info(data, sheet)
+            continue
+
+        # 支付方式 sheet → 生成付款信息文本
+        if sheet_name == '支付方式':
+            _extract_payment_info(data, sheet)
+            continue
+
         all_rows = list(sheet.iter_rows(values_only=True))
         table_rows: list = []
         product_header_row_idx = -1
@@ -507,6 +588,31 @@ def extract_data_from_quotation_xlsx(xlsx_path: str) -> dict:
             elif len(non_empty) >= 3:
                 # Multi-column row without labels → store as private table data
                 table_rows.append(non_empty)
+
+        # Direct cell reference extraction (first sheet only)
+        # 项目名称←A1；客户名称←C5；联系人←F5；送货地址←C6；电话号码←F6
+        if sheet_idx == 0:
+            a1 = all_rows[0][0] if all_rows and len(all_rows[0]) >= 1 else None
+            if a1 is not None and str(a1).strip():
+                data['项目名称'] = str(a1).strip()
+
+            def _cell(r: int, c: int):
+                """0-based row/col safe reader."""
+                return (
+                    all_rows[r][c]
+                    if len(all_rows) > r and len(all_rows[r]) > c
+                    else None
+                )
+
+            for _field, _r, _c in [
+                ('客户名称', 4, 2),   # C5
+                ('联系人',   4, 5),   # F5
+                ('送货地址', 5, 2),   # C6
+                ('电话号码', 5, 5),   # F6
+            ]:
+                _v = _cell(_r, _c)
+                if _v is not None and str(_v).strip():
+                    data[_field] = str(_v).strip()
 
         # Parse product table rows and compute contract amount placeholders
         if product_header_row_idx >= 0:
@@ -567,9 +673,10 @@ def _expand_product_rows(table, hardware_products: list,
         for prod_idx, prod in enumerate(products):
             actual_row = table.rows[template_row_idx + prod_idx]
             prod_rep = {
-                f'{prefix}bh': str(prod.get('bh', '')),
+                f'{prefix}bh': str(prod_idx + 1),  # 从 1 开始自动编号
                 f'{prefix}spxh': str(prod.get('spmc', '')),
                 f'{prefix}spmx': str(prod.get('mssm', '')),
+                f'{prefix}spms': str(prod.get('mssm', '')),  # 商品描述
                 f'{prefix}sl': str(prod.get('sl', '')),
                 f'{prefix}dw': str(prod.get('dw', '')),
                 f'{prefix}dj': _format_amount_str(prod.get('dj_hs')),
@@ -609,13 +716,39 @@ def _replace_in_paragraph(para, replacements: dict) -> None:
         return
 
     # Apply new text: put everything in run[0], blank all other runs
-    if para.runs:
-        para.runs[0].text = new_text
-        for run in para.runs[1:]:
-            run.text = ''
+    if '\n' not in new_text:
+        # Simple case: single-line replacement
+        if para.runs:
+            para.runs[0].text = new_text
+            for run in para.runs[1:]:
+                run.text = ''
+        else:
+            para.add_run(new_text)
     else:
-        # Edge case: paragraph has no runs – add one
-        para.add_run(new_text)
+        # Multi-line: replace \n with Word <w:br/> line breaks
+        lines = new_text.split('\n')
+        if para.runs:
+            first_run = para.runs[0]
+            first_run.text = lines[0]
+            for run in para.runs[1:]:
+                run.text = ''
+            r_elem = first_run._r
+        else:
+            first_run = para.add_run(lines[0])
+            r_elem = first_run._r
+        for line in lines[1:]:
+            br = OxmlElement('w:br')
+            r_elem.append(br)
+            if line:
+                t = OxmlElement('w:t')
+                t.text = line
+                if line.startswith(' ') or line.endswith(' '):
+                    t.set(qn('xml:space'), 'preserve')
+                r_elem.append(t)
+
+    # 付款信息不显示下划线
+    if '{{付款信息}}' in full_text and para.runs:
+        para.runs[0].font.underline = False
 
 
 def fill_template(template_path: str, data: dict, output_path: str) -> None:
